@@ -72,7 +72,7 @@ Thus, we can choose to ignore triangles if their normal is not facing us.
 
 This was implemented using `thrust::remove_if` as a stream compaction function.
 
-#### Impact
+#### Performance impact
 
 Below is a stage-wise comparison of the default duck render with back-face culling enabled and disabled:
 
@@ -90,11 +90,49 @@ As we can see, the rasterizer performance has a huge improvement thanks to the c
 
 Currently, the check to see if a triangle should be culled is made in the `shouldCull()` function, which is called as part of the stream compaction process. Perhaps this could be moved to the vertex processing stage or primitive assembly stage, although it probably would not create any noticeable improvements.
 
-Unfortunately, the cost of stream compaction means back-face culling does not always improve performance. A faster stream compaction would certainly help to offset this cost.
+Unfortunately, the cost of stream compaction means back-face culling does not always improve performance. Essentially, we need to cull away triangles that would generate many fragments to make up for this cost. A faster stream compaction would certainly help to offset this cost.
 
 ### UV texture mapping -- perspective-correct interpolation
 
 #### Overview
+
+When projecting 3D vertices onto a 2D space, the "depth" of these vertices gets distorted. This makes it so interpolating values from these coordinates naively (e.g. using only barycentric coordinates) leads to incorrect results. For example, see the following render of `checkerboard.gltf`, which was made using this naive interpolation method:
+
+![](checker-wrong.PNG)
+
+The expected result can be seen in this render that uses the perspective-correct interpolation method:
+
+![](checker-correct.PNG)
+
+This method basically involves computing a perspective-correct Z (or depth) value using the barycentric coordinates and the inverse of each vertex's depth values, and then multiplying each barycentric coordinate by `(perspective-correct Z) / (each vertex's Z)`.
+
+#### Performance impact
+
+Below is a comparison of the time spent on each pipeline stage for the default duck render, with perspective-correct enabled and disabled:
+
+![](img/stages-persp-duck-default.png)
+
+As we can see, the time spent in the rasterizer increases slightly, but not very significantly. This makes sense, since the rasterizer needs to perform additional work for each fragment in order to calculate the perspective-correct weights.
+
+#### Further optimizations
+
+In order to speed up computations in the rasterizer, the inverse of each vertex's Z value could be computed in the vertex processing stage.
+
+### UV texture mapping -- bilinear filtering
+
+#### Overview
+
+Simply put, bilinear filtering is a way of making texture mapped models have a smoother coloring. With bilinear filtering, we perform bilinear interpolation based on the UV coordinates, such that the final sampled color is based on up to four pixels from the texture, rather than just one. This allows for a smoother transition when there is a change in color in the texture.
+
+Below is a zoomed-in version of `CesiumMilkTruck.gltf` without bilinear filtering enabled:
+
+![](img/bilinear-no.PNG)
+
+Compare to the same scene, rendered with bilinear filtering enabled:
+
+![](img/bilinear-yes.PNG)
+
+#### Performance impact
 
 ### Credits
 
