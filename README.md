@@ -160,7 +160,7 @@ Below is a very zoomed-in duck with no antialiasing:
 
 And below is the same scene, but with 4x supersampling antialiasing:
 
-![](img/aa-4x.png)
+![](img/aa-4x.PNG)
 
 As we can see, the final image looks smoother, with color transitions that are less harsh.
 
