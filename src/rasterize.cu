@@ -20,6 +20,14 @@
 #include <thrust/remove.h>
 #include <thrust/execution_policy.h>
 
+#define CUDA_MEASURE 1
+#if CUDA_MEASURE == 0
+// "undefine" cuda event things
+#define cudaEventCreate(x) ((void)(0))
+#define cudaEventRecord(x) ((void)(0))
+#define cudaEventSynchronize(x) ((void)(0))
+#define cudaEventElapsedTime(x, y, z) ((void)(0))
+#endif // CUDA_MEASURE == 0
 #define PERSP_CORRECT 0
 #define BILINEAR_INTERP 0
 #define BACK_FACE_CULLING 1
@@ -105,6 +113,7 @@ namespace {
 
 		glm::vec3 eyePos;	// eye space position used for shading
 		glm::vec3 eyeNor;
+    bool shouldShade = false;
 		// VertexAttributeTexcoord texcoord0;
 		// TextureData* dev_diffuseTex;
 		// ...
@@ -162,6 +171,23 @@ static int * dev_depth = NULL;	// you might need this buffer when doing depth te
 static float * dev_depthValues = NULL; // stores depth values
 static int * dev_depthLocks = NULL;	// locks Z-buffer
 
+#if CUDA_MEASURE
+
+float vertProcTimeAcc = 0.0f;
+float primAsmTimeAcc = 0.0f;
+#if BACK_FACE_CULLING
+float cullTimeAcc = 0.0f;
+int cullCountAcc = 0;
+#endif
+float rastTimeAcc = 0.0f;
+float fragShaderTimeAcc = 0.0f;
+float copyToPBOTimeAcc = 0.0f;
+
+int measureCount = 0;
+#define MEASURE_COUNT_MAX 1000
+
+#endif // CUDA_MEASURE
+
 /**
  * Kernel that writes the image to the OpenGL PBO directly.
  */
@@ -197,6 +223,7 @@ void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
       glm::vec3 baseColor;
       glm::vec3 eyePos;
       glm::vec3 eyeNor;
+      bool shouldShade = false;
 #if SSAA_FACTOR > 1
       int aaIndex = SSAA_FACTOR * index;
 
@@ -206,6 +233,7 @@ void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
           baseColor += frag.color;
           eyePos += frag.eyePos;
           eyeNor += frag.eyeNor;
+          shouldShade |= frag.shouldShade;
         }
       }
       baseColor /= float(SSAA_FACTOR * SSAA_FACTOR);
@@ -216,10 +244,16 @@ void render(int w, int h, Fragment *fragmentBuffer, glm::vec3 *framebuffer) {
       baseColor = fragmentBuffer[index].color;
       eyePos = fragmentBuffer[index].eyePos;
       eyeNor = fragmentBuffer[index].eyeNor;
+      shouldShade = fragmentBuffer[index].shouldShade;
 #endif
-		// TODO: add your fragment shader code here
-      float lambert = glm::clamp(glm::dot(glm::normalize(-eyePos), eyeNor), 0.0f, 1.0f);
-      framebuffer[index] = baseColor * lambert;
+		  // TODO: add your fragment shader code here
+      if (shouldShade) {
+        float lambert = glm::clamp(glm::dot(glm::normalize(-eyePos), eyeNor), 0.0f, 1.0f);
+        framebuffer[index] = baseColor * lambert;
+      }
+      else {
+        framebuffer[index] = baseColor;
+      }
     }
 }
 
@@ -930,17 +964,18 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
             if (texCoord.x < 0.0f || texCoord.x > 1.0f || texCoord.y < 0.0f || texCoord.y > 1.0f) {
               continue;
             }
+            frag.shouldShade = true;
             frag.color = colorFromUV(prim.v[0].dev_diffuseTex, texCoord, prim.v[0].texWidth, prim.v[0].texHeight);
           }
           else if (true) {
             // color using normal
-            // TODO: always compute this and pass to frag
-
+            
             nor = glm::normalize(nor);
             // check if coords are in range (may not be if Z value is weird)
             if (nor.x < -1.0f || nor.x > 1.0f || nor.y < -1.0f || nor.y > 1.0f || nor.z < -1.0f || nor.z > 1.0f) {
               continue;
             }
+            frag.shouldShade = false;
             frag.color = glm::abs(nor);
           }
           frag.eyeNor = nor;
@@ -986,6 +1021,20 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
     dim3 frameBufferBlockCount2d((width / SSAA_FACTOR - 1) / blockSize2d.x + 1,
       (height / SSAA_FACTOR - 1) / blockSize2d.y + 1);
 
+    // set up CUDA timing events
+    cudaEvent_t stageStart, stageEnd;
+    cudaEventCreate(&stageStart);
+    cudaEventCreate(&stageEnd);
+
+    float vertProcTime = 0.0f;
+    float primAsmTime = 0.0f;
+#if BACK_FACE_CULLING
+    float cullTime;
+#endif
+    float rastTime;
+    float fragShaderTime;
+    float copyToPBOTime;
+
 	// Execute your rasterization pipeline here
 	// (See README for rasterization pipeline outline.)
 
@@ -1001,18 +1050,31 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 			auto p = (it->second).begin();	// each primitive
 			auto pEnd = (it->second).end();
 			for (; p != pEnd; ++p) {
+        float measurement;
 				dim3 numBlocksForVertices((p->numVertices + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
 				dim3 numBlocksForIndices((p->numIndices + numThreadsPerBlock.x - 1) / numThreadsPerBlock.x);
         checkCUDAError("pre-Vertex Processing");
+        cudaEventRecord(stageStart);
 				_vertexTransformAndAssembly << < numBlocksForVertices, numThreadsPerBlock >> >(p->numVertices, *p, MVP, MV, MV_normal, width, height);
-				checkCUDAError("post-Vertex Processing");
+        cudaEventRecord(stageEnd);
+        checkCUDAError("post-Vertex Processing");
 				cudaDeviceSynchronize();
+        cudaEventSynchronize(stageEnd);
+        cudaEventElapsedTime(&measurement, stageStart, stageEnd);
+        vertProcTime += measurement;
+
+        cudaEventRecord(stageStart);
 				_primitiveAssembly << < numBlocksForIndices, numThreadsPerBlock >> >
 					(p->numIndices, 
 					curPrimitiveBeginId, 
 					dev_primitives, 
 					*p);
+        cudaEventRecord(stageEnd);
 				checkCUDAError("Primitive Assembly");
+
+        cudaEventSynchronize(stageEnd);
+        cudaEventElapsedTime(&measurement, stageStart, stageEnd);
+        primAsmTime += measurement;
 
 				curPrimitiveBeginId += p->numPrimitives;
 			}
@@ -1038,13 +1100,29 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
 
   // back-face culling
 #if BACK_FACE_CULLING
+  cudaEventRecord(stageStart);
+
   Primitive *newEnd = thrust::remove_if(thrust::device, dev_primitives, dev_primitives + curPrimitiveBeginId, shouldCull());
+  cullCountAcc += (dev_primitives + curPrimitiveBeginId) - newEnd;
+  //printf("culled: %d", (dev_primitives + curPrimitiveBeginId) - newEnd);
   curPrimitiveBeginId = newEnd - dev_primitives;
+
+  cudaEventRecord(stageEnd);
+  cudaEventSynchronize(stageEnd);
+
+  cudaEventElapsedTime(&cullTime, stageStart, stageEnd);
 #endif
 
 	// TODO: rasterize
   checkCUDAError("pre-actual rasterizer");
+  cudaEventRecord(stageStart);
+
   rast << <dim3(curPrimitiveBeginId / 32 + 1), dim3(32) >> > (dev_primitives, curPrimitiveBeginId, width, height, dev_fragmentBuffer, dev_depthValues, dev_depthLocks);
+  
+  cudaEventRecord(stageEnd);
+  cudaEventSynchronize(stageEnd);
+
+  cudaEventElapsedTime(&rastTime, stageStart, stageEnd);
   checkCUDAError("post-actual rasterizer");
 #if 0
   float *buf = (float *)malloc(width * height * sizeof(float));
@@ -1062,11 +1140,67 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
   while (1);
 #endif
     // Copy depthbuffer colors into framebuffer
+  cudaEventRecord(stageStart);
+
 	render << <frameBufferBlockCount2d, blockSize2d >> >(width / SSAA_FACTOR, height / SSAA_FACTOR, dev_fragmentBuffer, dev_framebuffer);
+
+  cudaEventRecord(stageEnd);
+  cudaEventSynchronize(stageEnd);
+
+  cudaEventElapsedTime(&fragShaderTime, stageStart, stageEnd);
+
 	checkCUDAError("fragment shader");
-    // Copy framebuffer into OpenGL buffer for OpenGL previewing
-    sendImageToPBO<<<frameBufferBlockCount2d, blockSize2d >>>(pbo, width / SSAA_FACTOR, height / SSAA_FACTOR, dev_framebuffer);
-    checkCUDAError("copy render result to pbo");
+  cudaEventRecord(stageStart);
+
+  // Copy framebuffer into OpenGL buffer for OpenGL previewing
+  sendImageToPBO<<<frameBufferBlockCount2d, blockSize2d >>>(pbo, width / SSAA_FACTOR, height / SSAA_FACTOR, dev_framebuffer);
+
+  cudaEventRecord(stageEnd);
+  cudaEventSynchronize(stageEnd);
+
+  cudaEventElapsedTime(&copyToPBOTime, stageStart, stageEnd);
+  checkCUDAError("copy render result to pbo");
+
+#if CUDA_MEASURE
+  measureCount++;
+
+  vertProcTimeAcc += vertProcTime;
+  primAsmTimeAcc += primAsmTime;
+#if BACK_FACE_CULLING
+  cullTimeAcc += cullTime;
+#endif
+  rastTimeAcc += rastTime;
+  fragShaderTimeAcc += fragShaderTime;
+  copyToPBOTimeAcc += copyToPBOTime;
+
+  if (measureCount >= MEASURE_COUNT_MAX) {
+    // print measurements
+    printf("Vertex Processing:  %.4f\n", vertProcTimeAcc / (float)measureCount);
+    printf("Primitive Assembly: %.4f\n", primAsmTimeAcc / (float)measureCount);
+#if BACK_FACE_CULLING
+    printf("Back-face Culling:  %.4f\n", cullTimeAcc / (float)measureCount);
+    printf("Faces Culled:       %.4f\n", (float)(cullCountAcc) / (float)measureCount);
+#endif
+    printf("Rasterizer:         %.4f\n", rastTimeAcc / (float)measureCount);
+    printf("Fragment Shader:    %.4f\n", fragShaderTimeAcc / (float)measureCount);
+    printf("Copy to PBO:        %.4f\n", copyToPBOTimeAcc / (float)measureCount);
+    printf("\n");
+
+    measureCount = 0;
+
+    vertProcTimeAcc = 0.0f;
+    primAsmTimeAcc = 0.0f;
+#if BACK_FACE_CULLING
+    cullTimeAcc = 0.0f;
+    cullCountAcc = 0;
+#endif
+    rastTimeAcc = 0.0f;
+    fragShaderTimeAcc = 0.0f;
+    copyToPBOTimeAcc = 0.0f;
+
+  }
+#endif
+
 }
 
 /**
