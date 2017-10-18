@@ -98,11 +98,11 @@ Unfortunately, the cost of stream compaction means back-face culling does not al
 
 When projecting 3D vertices onto a 2D space, the "depth" of these vertices gets distorted. This makes it so interpolating values from these coordinates naively (e.g. using only barycentric coordinates) leads to incorrect results. For example, see the following render of `checkerboard.gltf`, which was made using this naive interpolation method:
 
-![](persp-wrong.PNG)
+![](img/persp-wrong.PNG)
 
 The expected result can be seen in this render that uses the perspective-correct interpolation method:
 
-![](persp-correct.PNG)
+![](img/persp-correct.PNG)
 
 This method basically involves computing a perspective-correct Z (or depth) value using the barycentric coordinates and the inverse of each vertex's depth values, and then multiplying each barycentric coordinate by `(perspective-correct Z) / (each vertex's Z)`.
 
