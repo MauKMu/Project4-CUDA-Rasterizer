@@ -30,11 +30,19 @@
 #endif // CUDA_MEASURE == 0
 #define PERSP_CORRECT 0
 #define BILINEAR_INTERP 0
-#define BACK_FACE_CULLING 1
+#define BACK_FACE_CULLING 0
 #define SSAA_FACTOR 1
 #if SSAA_FACTOR <= 0
 #error SSAA_FACTOR must be > 0
 #endif
+
+#define RENDER_FULL_TRIANGLE 0
+#define RENDER_VERTICES 1
+#define RENDER_EDGES 2
+
+#define RENDER_MODE RENDER_FULL_TRIANGLE
+
+#define VERTEX_RENDER_SIZE 2
 
 namespace {
 
@@ -879,15 +887,6 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
   int idx = (blockIdx.x * blockDim.x) + threadIdx.x;
   if (idx < primitivesCount) {
     Primitive& prim = dev_primitives[idx];
-    // check if any Z is out of range
-#if 0
-    if (prim.v[0].pos.z <= 0.0f ||
-      prim.v[1].pos.z <= 0.0f || 
-      prim.v[2].pos.z <= 0.0f ) {
-      // skip this triangle
-      return;
-    }
-#endif
     // assume triangle
     glm::vec2 bboxMin = glm::max(glm::vec2(0.0f), 
                                  glm::min(glm::vec2(prim.v[0].pos), glm::min(glm::vec2(prim.v[1].pos), glm::vec2(prim.v[2].pos))));
@@ -895,13 +894,7 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
                                  glm::max(glm::vec2(prim.v[0].pos), glm::max(glm::vec2(prim.v[1].pos), glm::vec2(prim.v[2].pos))));
     bboxMin = glm::floor(bboxMin);
     bboxMax = glm::ceil(bboxMax);
-#if 0
-    bboxMin.x = 0.0f;// glm::max(0.0f, glm::min(prim.v[0].pos.x, glm::min(prim.v[1].pos.x, prim.v[2].pos.x)));
-    bboxMin.y = 0.0f;//glm::max(0.0f, glm::min(prim.v[0].pos.y, glm::min(prim.v[1].pos.y, prim.v[2].pos.y)));
 
-    bboxMax.x = (float)(w - 1);// glm::min((float)(w - 1), glm::max(prim.v[0].pos.x, glm::max(prim.v[1].pos.x, prim.v[2].pos.x)));
-    bboxMax.y = (float)(w - 1);// glm::min((float)(h - 1), glm::max(prim.v[0].pos.y, glm::max(prim.v[1].pos.y, prim.v[2].pos.y)));
-#endif
     glm::vec3 triPoints[3];
     triPoints[0] = glm::vec3(prim.v[0].pos);
     //triPoints[0].z = 0.0f;
@@ -915,6 +908,9 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
     float baryWeights[3];
     glm::vec3 baryCoords;
 
+    bool hasTexture = prim.v[0].dev_diffuseTex != NULL;
+
+#if RENDER_MODE == RENDER_FULL_TRIANGLE
     for (float y = bboxMin.y; y <= bboxMax.y; y += 1.0f) {
       for (float x = bboxMin.x; x <= bboxMax.x; x += 1.0f) {
         baryCoords = calculateBarycentricCoordinate(triPoints, glm::vec2(x, y));
@@ -935,28 +931,16 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
           z = -getZAtCoordinate(baryCoords, triPoints);
 #else
           float z = -getZAtCoordinate(baryCoords, triPoints);
-#if 0
-          float z = baryWeights[0] * prim.v[0].pos.z +
-            baryWeights[1] * prim.v[1].pos.z +
-            baryWeights[2] * prim.v[2].pos.z;
 #endif
-#endif
-          // add fragment
-          int fragIdx = (int)x + (int)y * w;
+         
           // depth check
-#if 0
-          if (z <= 0.0f) {
-            // skip this fragment
-            continue;
-          }
-#endif
           // lock this fragment on the depth buffer
           Fragment frag;
           glm::vec3 nor = baryWeights[0] * prim.v[0].eyeNor +
             baryWeights[1] * prim.v[1].eyeNor +
             baryWeights[2] * prim.v[2].eyeNor;
           // texture mapping
-          if (prim.v[0].dev_diffuseTex != NULL) {
+          if (hasTexture) {
             glm::vec2 texCoord = baryWeights[0] * prim.v[0].texcoord0 +
               baryWeights[1] * prim.v[1].texcoord0 +
               baryWeights[2] * prim.v[2].texcoord0;
@@ -967,7 +951,7 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
             frag.shouldShade = true;
             frag.color = colorFromUV(prim.v[0].dev_diffuseTex, texCoord, prim.v[0].texWidth, prim.v[0].texHeight);
           }
-          else if (true) {
+          else {
             // color using normal
             
             nor = glm::normalize(nor);
@@ -986,7 +970,9 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
           frag.depth = z;
           //frag.color = glm::vec3(z);
 
-#if 1
+          // add fragment
+          int fragIdx = (int)x + (int)y * w;
+
           // magic to make mutex work
           bool isSet;
           do {
@@ -1002,10 +988,136 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
             }
 
           } while (!isSet);
-#endif
         }
       }
     }
+#elif RENDER_MODE == RENDER_VERTICES
+    for (int i = 0; i < 3; i++) {
+      const glm::vec3& vert = triPoints[i];
+      int x = (int)vert.x;
+      int y = (int)vert.y;
+
+      if (x >= w || y >= h || x < 0 || y < 0) {
+        continue;
+      }
+
+      Fragment frag;
+      if (hasTexture) {
+        frag.shouldShade = true;
+        frag.color = colorFromUV(prim.v[0].dev_diffuseTex, prim.v[i].texcoord0, prim.v[i].texWidth, prim.v[i].texHeight);
+      }
+      else {
+        frag.shouldShade = false;
+        frag.color = glm::abs(prim.v[i].eyeNor);
+      }
+      frag.eyePos = prim.v[i].eyePos;
+      frag.eyeNor = prim.v[i].eyeNor;
+
+      float z = vert.z;
+
+      int xLimit = glm::clamp(x + VERTEX_RENDER_SIZE, x, w - 1);
+      int yLimit = glm::clamp(y + VERTEX_RENDER_SIZE, y, h - 1);
+      for (int fragX = x; fragX <= xLimit; fragX++) {
+        for (int fragY = y; fragY <= yLimit; fragY++) {
+          int fragIdx = fragX + fragY * w;
+          bool isSet;
+          do {
+            isSet = true;// (atomicCAS(&dev_depthLocks[fragIdx], 0, 1) == 0);
+            if (isSet) {
+              // critical section
+              if (z < dev_depthValues[fragIdx]) {
+                dev_depthValues[fragIdx] = z;
+                fragmentBuffer[fragIdx] = frag;
+              }
+              // unlock fragment
+              dev_depthLocks[fragIdx] = 0;//atomicExch(&dev_depthLocks[fragIdx], 0);
+            }
+          } while (!isSet);
+        }
+      }
+    }
+#elif RENDER_MODE == RENDER_EDGES
+    // Bresenham's line algorithm
+    Fragment frag;
+    frag.shouldShade = false;
+    frag.color = glm::vec3(1.0f);
+    for (int i = 0; i < 3; i++) {
+      glm::ivec2 leftVert;
+      glm::ivec2 rightVert;
+      int nextIdx = i == 2 ? 0 : i + 1;
+
+      if ((int)triPoints[i].x < 0 || (int)triPoints[i].x >= w || (int)triPoints[nextIdx].x < 0 || (int)triPoints[nextIdx].x >= w ||
+          (int)triPoints[i].y < 0 || (int)triPoints[i].y >= h || (int)triPoints[nextIdx].y < 0 || (int)triPoints[nextIdx].y >= h) {
+        continue;
+      }
+
+      if ((int)triPoints[i].x == (int)triPoints[nextIdx].x) {
+        // vertical line
+        int yStart = glm::max(0, (int)glm::min(triPoints[i].y, triPoints[nextIdx].y));
+        int yEnd = glm::min(h - 1, (int)glm::max(triPoints[i].y, triPoints[nextIdx].y));
+        int x = (int)triPoints[i].x;
+        // draw(x,y)
+        for (int y = yStart; y <= yEnd; y++) {
+          int fragIdx = x + y * w;
+          fragmentBuffer[fragIdx] = frag;
+        }
+        continue;
+      }
+      else if ((int)triPoints[i].y == (int)triPoints[nextIdx].y) {
+        // horizontal line
+        int xStart = glm::max(0, (int)glm::min(triPoints[i].x, triPoints[nextIdx].x));
+        int xEnd = glm::min(w - 1, (int)glm::max(triPoints[i].x, triPoints[nextIdx].x));
+        int y = (int)triPoints[i].y;
+        // draw(x,y)
+        for (int x = xStart; x <= xEnd; x++) {
+          int fragIdx = x + y * w;
+          fragmentBuffer[fragIdx] = frag;
+        }
+        continue;
+      }
+      else if ((int)triPoints[i].x > (int)triPoints[nextIdx].x) {
+        rightVert = glm::ivec2(triPoints[i]);
+        leftVert = glm::ivec2(triPoints[nextIdx]);
+      }
+      else {
+        leftVert = glm::ivec2(triPoints[i]);
+        rightVert = glm::ivec2(triPoints[nextIdx]);
+      }
+      
+      float dErr = abs((triPoints[i].x - triPoints[nextIdx].x) / (triPoints[i].y - triPoints[nextIdx].y));
+      bool downward = ((rightVert.y - leftVert.y) < 0);
+      int increment = downward ? -1 : 1;
+
+      float accErr = 0.0f;
+      int xStart = glm::max(leftVert.x, 0);
+      int y = leftVert.y;
+      int xEnd = glm::min(rightVert.x, w - 1);
+      for (int x = xStart; x <= xEnd; x++) {
+        // draw(x,y)
+        if (y < 0 || y >= h) {
+          break;
+        }
+
+        int fragIdx = x + y * w;
+        fragmentBuffer[fragIdx] = frag;
+        accErr += dErr;
+        while (accErr >= 0.5f) {
+          y += increment;
+          // draw(x, y)
+          if (y < 0 || y >= h) {
+            break;
+          }
+          if ((downward && y == rightVert.y - 1) || (!downward && y == rightVert.y + 1)) {
+            y -= increment;
+          }
+
+          int fragIdx = x + y * w;
+          fragmentBuffer[fragIdx] = frag;
+          accErr -= 1.0f;
+        }
+      }
+    }
+#endif // RENDER_MODE
   }
 }
 

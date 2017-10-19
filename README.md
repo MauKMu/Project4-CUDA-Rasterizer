@@ -6,6 +6,8 @@ CUDA Rasterizer
 * Mauricio Mutai
 * Tested on: Windows 10, i7-7700HQ @ 2.2280GHz 16GB, GTX 1050Ti 4GB (Personal Computer)
 
+![](img/duck-30s.gif)
+
 ## Overview
 
 ### Introduction
@@ -31,8 +33,11 @@ Below are the rasterizer's main features:
 
 * Back-face culling
 * UV texture mapping with support for bilinear interpolation and perspective-correct mapping
+    * If not texture is present, the normals are used for coloring instead. This can be seen in 'CesiumMilkTruck.gltf'.
 * Supersample antialiasing
 * Basic Lambert shading
+* Render only vertices of triangles (with configurable size)
+* Render only edges of triangles (currently supports only fixed color and size)
 
 ## Analysis
 
@@ -177,6 +182,77 @@ In addition, in my implementation, the compression from the 4x resolution to the
 #### Further optimizations
 
 Similar to bilinear filtering, the increase in runtime mainly comes from having more memory accesses, so using shared memory could greatly improve the performance of antialiasing.
+
+### Vertex-only rendering
+
+#### Overview
+
+In this mode, the rasterizer only renders each triangle's vertices, rather than its entire surface. The size of the vertex (that is, how many pixels each vertex should cover) is configurable.
+
+Below is the duck rendered in this mode:
+
+![](img/duck-vertices.PNG)
+
+#### Performance impact
+
+Below is a comparison of the time spent on each pipeline stage for the default duck render, depending on whether we are rendering only vertices:
+
+![](img/stages-verts-duck-default.png)
+
+Interestingly enough, the time spent in the rasterizer increases. This is probably because of the vertex size used (6), which means each vertex will generate 36 fragments (assuming it is not close to the edge of the screen). This increases the time spent interpolating values and atomically checking and writing to the depth buffer.
+
+Indeed, if we decrease the vertex size to 2, we get the following result:
+
+![](img/stages-verts-sizes-duck-default.png)
+
+Which shows the rasterizes runs more quickly for a smaller vertex size.
+
+#### Further optimizations
+
+While not a performance optimization, it would be interesting to scale the vertex size depending on its distance from the camera. Right now, they are all drawn at the same size.
+
+### Edge-only rendering
+
+#### Overview
+
+In this mode, the rasterizer only renders each triangle's edges, rather than its entire surface. Currently, the thickness of the lines and its color is fixed (1 pixel and white, respectively).
+
+Below is the duck rendered in this mode:
+
+![](img/duck-edges.PNG)
+
+#### Performance impact
+
+Below is a comparison of the time spent on each pipeline stage for the default duck render, depending on whether we are rendering only edges:
+
+![](img/stages-edges-duck-default.png)
+
+Here, the time spent in the rasterizer also increases. This is probably due to the way I implemented Bresenham's line-drawing algorithm, which leads to massive warp divergence.
+
+#### Further optimizations
+
+If we found a way to implement the line-drawing algorithm with less warp divergence, we could probably improve performance significantly.
+
+## Enabling/disabling features
+
+The following `#define`s in `rasterize.cu` control whether certain features are available:
+
+```
+#define CUDA_MEASURE 1 // if non-zero, repeatedly measures runtime of each stage over 1000 frames and prints average
+// ...
+#define PERSP_CORRECT 0 // if non-zero, enables perspective-correct interpolation
+#define BILINEAR_INTERP 0 // if non-zero, enables bilinear texture filtering
+#define BACK_FACE_CULLING 0 // if non-zero, enables back-face culling
+#define SSAA_FACTOR 1 // if more than 1, enables (SSAA_FACTOR^2)x SSAA, e.g. 4x SSAA if SSAA_FACTOR is 2
+// ...
+#define RENDER_FULL_TRIANGLE 0
+#define RENDER_VERTICES 1
+#define RENDER_EDGES 2
+
+#define RENDER_MODE RENDER_FULL_TRIANGLE // changes render mode according to #defines above
+
+#define VERTEX_RENDER_SIZE 2 // changes dimension of vertex when in vertex-only mode
+```
 
 ## Credits
 
