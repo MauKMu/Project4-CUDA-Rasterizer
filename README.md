@@ -33,7 +33,7 @@ Below are the rasterizer's main features:
 
 * Back-face culling
 * UV texture mapping with support for bilinear interpolation and perspective-correct mapping
-    * If not texture is present, the normals are used for coloring instead. This can be seen in 'CesiumMilkTruck.gltf'.
+    * If no texture is present, the normals are used for coloring instead. This can be seen in 'CesiumMilkTruck.gltf'.
 * Supersample antialiasing
 * Basic Lambert shading
 * Render only vertices of triangles (with configurable size)
@@ -51,6 +51,10 @@ The other view was obtained by zooming into the duck:
 
 ![](img/duck-zoom.PNG)
 
+Another scene used was `CesiumMilkTruck.gltf`. The default view for this can be found below:
+
+![](img/truck-default.PNG)
+
 ### Bare-bones performance overview
 
 Below is a breakdown of the percentage of time spent in each stage of the pipeline for the default duck render:
@@ -64,6 +68,12 @@ Below is the same breakdown, but for the zoomed-in render:
 ![](img/percent-bbones-duck-zoom.png)
 
 Now, the rasterizer stage takes up much more time than any of the other stages. The triangles are now larger with regards to the screen, the rasterizer spends more time iterating over all the pixels covered by the triangle and generating fragments for them.
+
+As an additional comparison point, this chart compares default renders for the duck and the truck scenes:
+
+![](img/bbones-vs-truck.png)
+
+The truck takes up more of the screen, so it makes sense that the rasterizer takes more time there.
 
 Next, we will investigate one optimization I implemented to attempt to speed up my pipeline.
 
@@ -258,3 +268,4 @@ The following `#define`s in `rasterize.cu` control whether certain features are 
 
 * [tinygltfloader](https://github.com/syoyo/tinygltfloader) by [@soyoyo](https://github.com/syoyo)
 * [glTF Sample Models](https://github.com/KhronosGroup/glTF/blob/master/sampleModels/README.md)
+* [Bresenham's line algorithm](https://en.wikipedia.org/wiki/Bresenham%27s_line_algorithm)

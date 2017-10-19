@@ -30,7 +30,7 @@
 #endif // CUDA_MEASURE == 0
 #define PERSP_CORRECT 0
 #define BILINEAR_INTERP 0
-#define BACK_FACE_CULLING 0
+#define BACK_FACE_CULLING 1
 #define SSAA_FACTOR 1
 #if SSAA_FACTOR <= 0
 #error SSAA_FACTOR must be > 0
@@ -1215,7 +1215,9 @@ void rasterize(uchar4 *pbo, const glm::mat4 & MVP, const glm::mat4 & MV, const g
   cudaEventRecord(stageStart);
 
   Primitive *newEnd = thrust::remove_if(thrust::device, dev_primitives, dev_primitives + curPrimitiveBeginId, shouldCull());
+#if CUDA_MEASURE
   cullCountAcc += (dev_primitives + curPrimitiveBeginId) - newEnd;
+#endif
   //printf("culled: %d", (dev_primitives + curPrimitiveBeginId) - newEnd);
   curPrimitiveBeginId = newEnd - dev_primitives;
 
