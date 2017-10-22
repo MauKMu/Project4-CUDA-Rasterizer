@@ -20,7 +20,7 @@
 #include <thrust/remove.h>
 #include <thrust/execution_policy.h>
 
-#define CUDA_MEASURE 1
+#define CUDA_MEASURE 0
 #if CUDA_MEASURE == 0
 // "undefine" cuda event things
 #define cudaEventCreate(x) ((void)(0))
@@ -1084,7 +1084,7 @@ void rast(Primitive* dev_primitives, int primitivesCount, int w, int h, Fragment
         rightVert = glm::ivec2(triPoints[nextIdx]);
       }
       
-      float dErr = abs((triPoints[i].x - triPoints[nextIdx].x) / (triPoints[i].y - triPoints[nextIdx].y));
+      float dErr = abs((triPoints[i].y - triPoints[nextIdx].y) / (triPoints[i].x - triPoints[nextIdx].x));
       bool downward = ((rightVert.y - leftVert.y) < 0);
       int increment = downward ? -1 : 1;
 
